@@ -20,6 +20,7 @@ import (
 type API struct {
 	HttpClient              *http.Client
 	BaseURL                 string
+	WalletURL               string
 	Signer                  Signer
 	Debug                   bool
 	Compress                CompressionType
@@ -33,7 +34,7 @@ type API struct {
 	customGetRequiredKeys func(tx *Transaction) ([]ecc.PublicKey, error)
 }
 
-func New(baseURL string) *API {
+func New(baseURL string, walletUrl string) *API {
 	api := &API{
 		HttpClient: &http.Client{
 			Transport: &http.Transport{
@@ -50,8 +51,9 @@ func New(baseURL string) *API {
 				DisableKeepAlives:     true, // default behavior, because of `nodeos`'s lack of support for Keep alives.
 			},
 		},
-		BaseURL:  baseURL,
-		Compress: CompressionZlib,
+		BaseURL:   baseURL,
+		WalletURL: walletUrl,
+		Compress:  CompressionZlib,
 	}
 
 	return api
@@ -176,8 +178,13 @@ func (api *API) ABIBinToJSON(code AccountName, action Name, payload HexBytes) (o
 	return resp.Args, nil
 }
 
-func (api *API) WalletCreate(walletName string) (err error) {
-	return api.call("wallet", "create", walletName, nil)
+func (api *API) WalletCreate(walletName string) (out interface{}, err error) {
+	err = api.call("wallet", "create", walletName, &out)
+	if err != nil {
+		return nil, err
+	}
+	return
+
 }
 
 func (api *API) WalletOpen(walletName string) (err error) {
@@ -512,7 +519,7 @@ func (api *API) call(baseAPI string, endpoint string, body interface{}, out inte
 		return err
 	}
 
-	targetURL := fmt.Sprintf("%s/v1/%s/%s", api.BaseURL, baseAPI, endpoint)
+	targetURL := fmt.Sprintf("%s/v1/%s/%s", api.WalletURL, baseAPI, endpoint)
 	req, err := http.NewRequest("POST", targetURL, jsonBody)
 	if err != nil {
 		return fmt.Errorf("NewRequest: %s", err)

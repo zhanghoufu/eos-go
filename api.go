@@ -179,7 +179,7 @@ func (api *API) ABIBinToJSON(code AccountName, action Name, payload HexBytes) (o
 }
 
 func (api *API) WalletCreate(walletName string) (out interface{}, err error) {
-	err = api.call("wallet", "create", walletName, &out)
+	err = api.walletcall("wallet", "create", walletName, &out)
 	if err != nil {
 		return nil, err
 	}
@@ -188,29 +188,29 @@ func (api *API) WalletCreate(walletName string) (out interface{}, err error) {
 }
 
 func (api *API) WalletOpen(walletName string) (err error) {
-	return api.call("wallet", "open", walletName, nil)
+	return api.walletcall("wallet", "open", walletName, nil)
 }
 
 func (api *API) WalletLock(walletName string) (err error) {
-	return api.call("wallet", "lock", walletName, nil)
+	return api.walletcall("wallet", "lock", walletName, nil)
 }
 
 func (api *API) WalletLockAll() (err error) {
-	return api.call("wallet", "lock_all", nil, nil)
+	return api.walletcall("wallet", "lock_all", nil, nil)
 }
 
 func (api *API) WalletUnlock(walletName, password string) (err error) {
-	return api.call("wallet", "unlock", []string{walletName, password}, nil)
+	return api.walletcall("wallet", "unlock", []string{walletName, password}, nil)
 }
 
 // WalletImportKey loads a new WIF-encoded key into the wallet.
 func (api *API) WalletImportKey(walletName, wifPrivKey string) (err error) {
-	return api.call("wallet", "import_key", []string{walletName, wifPrivKey}, nil)
+	return api.walletcall("wallet", "import_key", []string{walletName, wifPrivKey}, nil)
 }
 
 func (api *API) WalletPublicKeys() (out []ecc.PublicKey, err error) {
 	var textKeys []string
-	err = api.call("wallet", "get_public_keys", nil, &textKeys)
+	err = api.walletcall("wallet", "get_public_keys", nil, &textKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +227,7 @@ func (api *API) WalletPublicKeys() (out []ecc.PublicKey, err error) {
 }
 
 func (api *API) ListWallets(walletName ...string) (out []string, err error) {
-	err = api.call("wallet", "list_wallets", walletName, &out)
+	err = api.walletcall("wallet", "list_wallets", walletName, &out)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +237,7 @@ func (api *API) ListWallets(walletName ...string) (out []string, err error) {
 
 func (api *API) ListKeys(walletNames ...string) (out []*ecc.PrivateKey, err error) {
 	var textKeys []string
-	err = api.call("wallet", "list_keys", walletNames, &textKeys)
+	err = api.walletcall("wallet", "list_keys", walletNames, &textKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +255,7 @@ func (api *API) ListKeys(walletNames ...string) (out []*ecc.PrivateKey, err erro
 
 func (api *API) GetPublicKeys() (out []*ecc.PublicKey, err error) {
 	var textKeys []string
-	err = api.call("wallet", "get_public_keys", nil, &textKeys)
+	err = api.walletcall("wallet", "get_public_keys", nil, &textKeys)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +272,7 @@ func (api *API) GetPublicKeys() (out []*ecc.PublicKey, err error) {
 }
 
 func (api *API) WalletSetTimeout(timeout int32) (err error) {
-	return api.call("wallet", "set_timeout", timeout, nil)
+	return api.walletcall("wallet", "set_timeout", timeout, nil)
 }
 
 func (api *API) WalletSignTransaction(tx *SignedTransaction, chainID []byte, pubKeys ...ecc.PublicKey) (out *WalletSignTransactionResp, err error) {
@@ -281,7 +281,7 @@ func (api *API) WalletSignTransaction(tx *SignedTransaction, chainID []byte, pub
 		textKeys = append(textKeys, key.String())
 	}
 
-	err = api.call("wallet", "sign_transaction", []interface{}{
+	err = api.walletcall("wallet", "sign_transaction", []interface{}{
 		tx,
 		textKeys,
 		hex.EncodeToString(chainID),
@@ -514,6 +514,60 @@ func (api *API) GetCurrencyBalance(account AccountName, symbol string, code Acco
 // See more here: libraries/chain/contracts/abi_serializer.cpp:58...
 
 func (api *API) call(baseAPI string, endpoint string, body interface{}, out interface{}) error {
+	jsonBody, err := enc(body)
+	if err != nil {
+		return err
+	}
+
+	targetURL := fmt.Sprintf("%s/v1/%s/%s", api.BaseURL, baseAPI, endpoint)
+	req, err := http.NewRequest("POST", targetURL, jsonBody)
+	if err != nil {
+		return fmt.Errorf("NewRequest: %s", err)
+	}
+
+	if api.Debug {
+		// Useful when debugging API calls
+		requestDump, err := httputil.DumpRequest(req, true)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println("-------------------------------")
+		fmt.Println(string(requestDump))
+		fmt.Println("")
+	}
+
+	resp, err := api.HttpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("%s: %s", req.URL.String(), err)
+	}
+	defer resp.Body.Close()
+
+	var cnt bytes.Buffer
+	_, err = io.Copy(&cnt, resp.Body)
+	if err != nil {
+		return fmt.Errorf("Copy: %s", err)
+	}
+
+	if resp.StatusCode == 404 {
+		return ErrNotFound
+	}
+	if resp.StatusCode > 299 {
+		return fmt.Errorf("%s: status code=%d, body=%s", req.URL.String(), resp.StatusCode, cnt.String())
+	}
+
+	if api.Debug {
+		fmt.Println("RESPONSE:")
+		fmt.Println(cnt.String())
+		fmt.Println("")
+	}
+
+	if err := json.Unmarshal(cnt.Bytes(), &out); err != nil {
+		return fmt.Errorf("Unmarshal: %s", err)
+	}
+
+	return nil
+}
+func (api *API) walletcall(baseAPI string, endpoint string, body interface{}, out interface{}) error {
 	jsonBody, err := enc(body)
 	if err != nil {
 		return err
